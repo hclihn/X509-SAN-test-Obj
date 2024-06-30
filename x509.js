@@ -55,7 +55,7 @@ function asn1_parse_oid(buf) {
       sid += cur_octet;
 
       if (sid > Number.MAX_SAFE_INTEGER)
-        throw "Too big SID value: " + sid;
+        throw `Too big SID value: ${sid}`;
       // end of the OID field
       oid.push(sid);
       sid = 0;
@@ -63,12 +63,12 @@ function asn1_parse_oid(buf) {
       sid += cur_octet & 0x7f; sid <<= 7;
 
       if (sid > Number.MAX_SAFE_INTEGER)
-        throw "Too big SID value: " + sid;
+        throw `Too big SID value: ${sid}`;
     }
   }
 
   if (buf[buf.length-1] >= 0x80)
-    throw "Last octet in oid buffer has highest bit set to 1";
+    throw `Last octet in OID buffer has highest bit set`;
 
   return oid.join('.')
 }
@@ -125,7 +125,7 @@ function asn1_parse_ia5_string(buf) {
   if (is_ia5(buf))
     return buf.toString();
   else
-    throw "Not a IA5String: " + buf;
+    throw `Not an IA5String: ${buf}`;
 }
 
 /**
@@ -167,7 +167,7 @@ function asn1_parse_bit_string(buf) {
 
   const shift = buf[0];
   if (shift > 7)
-    throw "Incorrect shift in bitstring: " + shift;
+    throw `Incorrect shift in bitstring: ${shift}`;
 
   var value = Buffer.allocUnsafe(buf.length - 1);
   var upper_bits = 0;
@@ -225,7 +225,7 @@ function asn1_read_length(buf, pointer) {
   var s = buf[pointer];
   var length = 0;
   if (s == 0x80 || s == 0xff)
-    throw "indefinite length is not supported";
+    throw `indefinite length is not supported`;
 
   if (s < 0x80) {
     // length is less than 128
@@ -234,15 +234,15 @@ function asn1_read_length(buf, pointer) {
   } else {
     var l = s & 0x7f;
     if (l > (MAX_INT_BYTES + 1))
-      throw "Too big length, exceeds MAX_SAFE_INTEGER: " + l;
+      throw `Too big length, exceeds NUmber.MAX_SAFE_INTEGER: ${l}`;
 
     if ((pointer + l) >= buf.length)
-      throw "Went out of buffer: " + (pointer + l) + " " + buf.length;
+      throw `Went out of buffer (${buf.length}): ${pointer + l}`;
 
     for (let n = 0; n < l; n++) {
       length = (length * 256) + buf[++pointer];
       if (n == MAX_INT_BYTES && buf[pointer] > MAX_INT_REM_VAL)
-        throw "Too big length, exceeds MAX_SAFE_INTEGER";
+        throw `Too big length, exceeds Number.MAX_SAFE_INTEGER`;
     }
 
     return [length, pointer + 1];
@@ -257,7 +257,7 @@ function asn1_read_length(buf, pointer) {
  */
 function format_ipv4(buf) {
   if (buf.length != 4) {
-    throw "Not an IPv4 address: " + buf;
+    throw `Not an IPv4 address: ${buf}`;
   }
   // IPv4 address
   const intStrs = [];
@@ -275,7 +275,7 @@ function format_ipv4(buf) {
  */
 function format_ipv6(buf) {
   if (buf.length != 16) {
-    throw "Not an IPv6 address: " + buf;
+    throw `Not an IPv6 address: ${buf}`;
   }
   // IPv6 address
   const data = buf.toString('hex');
@@ -450,12 +450,12 @@ function asn1_read(buf) {
 
       do {
         if (i > 3)
-          throw "Too big tag value" + tag;
+          throw `Too big tag value: ${tag}`;
 
         i++;
 
         if (++pointer >= buf.length)
-          throw "Went out of buffer: " + pointer + " " + buf.length;
+          throw `Went out of buffer (${buf.length}): ${pointer}`;
 
         tag <<= 7;
         tag += (buf[pointer] & 0x7f);
@@ -464,15 +464,14 @@ function asn1_read(buf) {
     }
 
     if (++pointer > buf.length)
-       throw "Went out of buffer: " + pointer + " " + buf.length;
+       throw `Went out of buffer (${buf.length}): ${pointer}`;
 
     var lp = asn1_read_length(buf, pointer);
     length = lp[0];
     pointer = lp[1];
 
     if ((pointer + length) > buf.length)
-       throw "length exceeds buf side: " + length + " " + pointer + " "
-         +  buf.length;
+       throw `length (${length}) exceeds buffer (${buf.length}) side: ${pointer}`;
 
     if (is_constructed) {
       a.push(asn1_read(buf.slice(pointer, pointer + length)));
