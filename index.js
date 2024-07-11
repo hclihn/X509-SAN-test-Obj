@@ -4,7 +4,7 @@ const header = `-----BEGIN CERTIFICATE----- MIIIlzCCCD2gAwIBAgIRAMvURZGMQkPqoFqm
 
 try {
   let s = 'SANs:\n';
-  let sans = x509.get_san(x509.header2pem(header));
+  let sans = x509.get_san(x509.header2pem(header), 0, false);
   for (let i = 0; i<sans.length; i++) {
     s += sans[i] + '\n';
   } 
