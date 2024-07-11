@@ -31,20 +31,17 @@ const MAX_INT_REM_VAL =  (1 << (MAX_INT_BITS - MAX_INT_BYTES * 8)) - 1;
  * @throws {Error} If the OID field value is longer than 6 bytes or invalid.
  */
 function asn1_parse_oid(buf) {
+    /** @type {string[]} */
     var oid = [];
-    var sid = 0;
     var cur_octet = buf[0];
     if (cur_octet < 40) {
-        oid.push(0);
-        oid.push(cur_octet);
+        oid.push(0, cur_octet);
     } else if (cur_octet < 80) {
-        oid.push(1);
-        oid.push(cur_octet - 40);
+        oid.push(1, cur_octet - 40);
     } else {
-        oid.push(2);
-        oid.push(cur_octet - 80);
+        oid.push(2, cur_octet - 80);
     }
-    for (let n = 1; n < buf.length; n++) {
+    for (let n = 1, sid = 0; n < buf.length; n++) {
         cur_octet = buf[n];
         if (cur_octet < 0x80) {
             sid += cur_octet;
@@ -65,7 +62,7 @@ function asn1_parse_oid(buf) {
     if (buf[buf.length-1] >= 0x80) {
         throw `Failed to parse OID: last octet in OID buffer has highest bit set`;
     }
-    return oid.join('.')
+    return oid.join('.');
 }
 
 /** Parse ASN.1 DER Integer.
@@ -78,9 +75,7 @@ function asn1_parse_integer(buf) {
     if (buf.length > MAX_INT_BYTES) { // may exceed MAX_SAFE_INTEGER, lets return hex
         return [true, asn1_parse_any(buf)];
     }
-    var value = 0;
-    var is_negative = false;
-    var compl_int = 0;
+    var value = 0, is_negative = false, compl_int = 0;
     if (buf[0] & 0x80) {
         is_negative = true;
         value = buf[0] & 0x7f;
@@ -90,8 +85,7 @@ function asn1_parse_integer(buf) {
     }
     if (buf.length > 1) {
         for (let n = 1; n < buf.length; n++) {
-            value <<= 8;
-            value += buf[n];
+            value = (value << 8) + buf[n];
         }
     }
     return [false, (is_negative)? (value - compl_int) : value];
@@ -153,7 +147,7 @@ function asn1_parse_bmp_string(buf) {
         l -= 2;
     }
     // Javascript only support utf16le decoding, so we need to conver utf16be to utf16le.
-    var value = Buffer.allocUnsafe(l);
+    const value = Buffer.allocUnsafe(l);
     for (let i = 0; i < l; i+=2) {
         value[i] = buf[i+1];
         value[i+1] = buf[i];
@@ -182,10 +176,10 @@ function asn1_parse_bit_string(buf) {
     if (shift > 7) {
         throw `Invalid shift (${shift}) in BitString`;
     }
-    var value = Buffer.allocUnsafe(buf.length - 1);
+    const value = Buffer.allocUnsafe(buf.length - 1);
     var upper_bits = 0;
     const mask = ((1 << shift) - 1) & 0xff;
-    // shift string right
+    // shift bits right shift bits
     for (let n = 1; n < buf.length; n++) {
          let val = (buf[n] >> shift) | upper_bits;
          upper_bits = (buf[n] & mask) << (8 - shift);
@@ -211,7 +205,7 @@ function asn1_parse_any(buf) {
 }
 
 /** Convert ASN.1 DER GeneralizedTime style string to Date.
- * @param  {string} s - The date-time string to be converted.
+ * @param  {string} s - The date-time string (YYYYMMDDhhmmss) to be converted.
  * @param  {string} time_zone - The string of the timezone code (e.g., 'Z').
  * @param  {boolean} [date_only=false] - Indicates if s only contains the date part. Default to false.
  * @return {Date} The Date object.
@@ -247,7 +241,7 @@ function asn1_read_length(buf, pointer) {
             throw `Failed to parse ASN.1 length @${pointer+l}: buffer size (${buf.length}) reached`;
         }
         for (let n = 0; n < l; n++) {
-            length = (length * 256) + buf[++pointer];
+            length = (length << 8) + buf[++pointer];
             if (n == MAX_INT_BYTES && buf[pointer] > MAX_INT_REM_VAL) {
                 throw `Failed to parse ASN.1 length @${pointer}: length (${length}+${buf[pointer]}) exceeds Number.MAX_SAFE_INTEGER`;
             }
@@ -340,9 +334,9 @@ function get_class_name(cls) {
 function ASNObj(cls, tag, constructed, value, in_hex = false) {
     this.cls = cls;
     this.tag = tag;
-    this.type = (cls == 0)? get_tag_name(tag):`${get_class_name(cls)}-${tag}`;        
+    this.type = (cls == 0)? get_tag_name(tag):`${get_class_name(cls)}-${tag}`;      
     this.constructed = constructed;
-    this.in_hex = in_hex; // value in hex representation
+    this.in_hex = in_hex; // value in hex string representation?
     this.value = value;
 }
 
@@ -361,10 +355,11 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
                 return new ASNObj(cls, tag, false, null);
             case 0x01: // Boolean
                 return new ASNObj(cls, tag, false, buf[0] != 0x00);
-            case 0x02: // INTEGER
+            case 0x02: { // INTEGER
                 const [in_hex, val] = asn1_parse_integer(buf);
                 return new ASNObj(cls, tag, false, val, in_hex);
-            case 0x03: // BIT STRING
+            }
+            case 0x03: { // BIT STRING
                 // get the BitSting value first, then try to see if we can parse
                 // the DER substructure. If not, then return the hex representation.
                 const data = asn1_parse_bit_string(buf);
@@ -373,6 +368,7 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
                 } catch(e) {
                     return new ASNObj(cls, tag, false, data.toString('hex'), true);
                 }
+            }
             case 0x04: // OCTET STRING
                 // Try to see if we can parse the DER substructure. 
                 // If not, then return the hex representation.
@@ -401,7 +397,6 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
             case 0x10: //Sequence
             case 0x11: // Set
                 return new ASNObj(cls, tag, true, asn1_read(buf));
-           
             case 0x0e: // TIME
             case 0x12: // NumericString (0-9 ans SP)
             case 0x13: // PrintableString (A-Z, a-z, 0-9, '-), +-/, SP, :, =, ?, *, &)
@@ -415,11 +410,8 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
                 if (s.length != 13) {
                     throw `Invalid UTCTime (${s}): length (${s.length}) is not 13`;
                 }
-                if (s[0] >= '5') {
-                    s = '19' + s;
-                } else {
-                    s = '20' + s;
-                }
+                // add the centry part of the year
+                s = (s[0] >= '5'? '19': '20') + s;
                 return new ASNObj(cls, tag, false, parse_datetime_str(s.slice(0, -1), s[14]));
             }
             case 0x18: { // GeneralizedTime (YYYYMMDDHHMMSSZ)
@@ -433,15 +425,12 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
             case 0x1a: // VisibleString (0x20-0x7f)
             case 0x1b: // GeneralString
                 return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
-            
             case 0x1c: // UniversalString
                 return new ASNObj(cls, tag, false, asn1_parse_universal_string(buf));
-            
             case 0x1d: // CHARACTER STRING
                 return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
             case 0x1e: // BMPString
                 return new ASNObj(cls, tag, false, asn1_parse_bmp_string(buf));
-            
             case 0x1f: // DATE (YYYYMMDD)
             case 0x20: // TIME-OF-DAY
             case 0x21: // DATE-TIME (YYYYMMDDHHMMSS)
@@ -467,20 +456,16 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
  * @throws {Error} If the buffer is not a valid DER.
  */
 function asn1_read(buf) {
+    /** @type {ASNObj[]} */
     const a = [];
-    var tag_class;
-    var tag;
-    var pointer = 0;
-    var is_constructed;
-    var s = '';
-    var length;
+    var pointer = 0, length = 0;
     while (pointer < buf.length) {
         // read type: 7 & 8 bits define class, 6 bit if it is constructed
-        s = buf[pointer];
-        tag_class = s >> 6;
-        is_constructed = (s & 0x20) != 0;
-        tag = s & 0x1f;
-        if (tag == 0x1f) {
+        const s = buf[pointer];
+        const tag_class = s >> 6;
+        const is_constructed = (s & 0x20) != 0;
+        let tag = s & 0x1f;
+        if (tag == 0x1f) { // a multi-byte tag
             tag = 0;
             let i = 0;
             do {
@@ -491,22 +476,21 @@ function asn1_read(buf) {
                 if (++pointer >= buf.length) {
                     throw `Failed to parse ASN.1 tag @${pointer}: buffer length (${buf.length}) reached`;
                 }
-                tag <<= 7;
-                tag += (buf[pointer] & 0x7f);
+                tag = (tag << 7) + (buf[pointer] & 0x7f);
             } while (buf[pointer] > 0x80);
         }
         if (++pointer > buf.length) {
              throw `Failed to parse ASN.1 length @${pointer}: buffer length (${buf.length}) reached`;
         }
-        var [length, pointer] = asn1_read_length(buf, pointer);
+        [length, pointer] = asn1_read_length(buf, pointer);
         if ((pointer + length) > buf.length) {
              throw `Failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
         }
         if (DEBUG) {
             if (is_constructed) {
-                console.log('constructed', tag_class, tag.toString(16), length.toString(16), pointer.toString(16))
+                console.log('constructed', tag_class, tag.toString(16), length.toString(16), pointer.toString(16));
             } else {
-                console.log('primitive  ', tag_class, tag.toString(16), length.toString(16), pointer.toString(16))
+                console.log('primitive  ', tag_class, tag.toString(16), length.toString(16), pointer.toString(16));
             }
         }
         a.push(asn1_parse_primitive(tag_class, tag,is_constructed, buf.slice(pointer, pointer + length)));
@@ -525,6 +509,7 @@ function format_ipv4(buf) {
         throw `Invalid IPv4 address: buffer legnth (${buf.length}) is not 4`;
     }
     // IPv4 address
+    /** @type {string[]} */
     const intStrs = [];
     for (let i = 0; i < buf.length; i++) {
         intStrs.push(String(buf[i]));
@@ -543,6 +528,7 @@ function format_ipv6(buf) {
     }
     // IPv6 address
     const data = buf.toString('hex');
+    /** @type {string[]} */
     const fields = [];
     // group in 4 hex digits with leading 0 removed
     for (let i = 0; i < data.length; i+=4) {
@@ -556,7 +542,10 @@ function format_ipv6(buf) {
         }
     }
     // find the longest consecutive range of 0s
-    let max_range = null, start = -1, end = -1;
+    /** Array of [length, start, end].
+     * @type {number[]|null} */
+    let max_range = null;
+    let start = -1, end = -1;
     for (let i = 0; i < fields.length; i++) {
         if (fields[i] == '0') {
             if (start == -1) {
@@ -687,7 +676,7 @@ const PATH_SPEC = /^(?<name>[a-z0-9-]+)(?:\[(?<idx>(?:[0-9]+|[*?]))\])?$/i;
  * @param  {PathElementSpec[]} path - The path element spec array defining the search path.
  * @param  {(string|number|Date} [exp=null] - The expected ASN.1 object value to match at the last level. Defaults to null which will not be used for matching.
  * @param  {number} [level=0] - The traversing level (corresponding to the index of the path array) used by the recusion. Defaults to 0.
- * @return {(SearchResult|SearchResult[])} The search result(s).
+ * @return {SearchResult[]} The search result(s).
  * @throws {Error} If the path is invalid; or it fails to find the ASNObj tree.
  */
 function travers_ASN(obj, path, exp = null, level = 0) {
@@ -719,11 +708,12 @@ value (${obj.value}) with exepcted (${exp})`;
         }
         return a;
     } else if (!Array.isArray(obj.value)) {
-        throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p}) value is not an array`
+        throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p}) value is not an array`;
     }
     if (m.groups.idx == '*' || m.groups.idx == '?') { // the [*|?] case
         // ?: only 1 match
         // *: 1 or more matches
+        /** @type {SearchResult[]} */
         const a = [];
         var matches = 0;
         for (let i = 0; i < obj.value.length; i++) {
@@ -834,16 +824,14 @@ function get_SAN_value(cert) {
 }
 
 /** Get X.509 certificate subjectAltName's values.
+ * Certificate version is not checked which should be done by the caller.
  * @param {ASNObj} cert - The top-level ASN.1 onject representing the certificate.
  * @return {string[]} The array of subjectAltName's values.
- * @throws {Error} If the certificate version is not 2, or it fails to find SAN.
+ * @throws {Error} If it fails to find SAN.
  */
 function get_cert_san(cert) {
-    const v = get_cert_version(cert);
-    if (v != 2) {
-        throw `Invalid certificate version for subjectAltName: ${v}`;
-    }
-    const info = get_SAN_value(cert)
+    const info = get_SAN_value(cert);
+    /** @type {string[]} */
     const  sans = [];
     for (let i = 1; i < info.length; i++) {
         sans.push(info[i].obj.value);
@@ -873,7 +861,11 @@ function get_san(pem_cert, index = 0, check_validity = true) {
     if (DEBUG) {
         console.log(JSON.stringify(cert, null, 2));
     }
-    const validity = get_cert_validity(cert);
+    const v = get_cert_version(cert);
+    if (v != 2) {
+        throw `Invalid certificate version for subjectAltName: ${v}`;
+    }
+const validity = get_cert_validity(cert);
     const now = new Date();
     if (check_validity && (validity.notBefore > now || validity.notAfter < now)) {
         throw `Invalid certificate validity: ${validity.notBefore} to ${validity.notAfter}`;
@@ -893,7 +885,7 @@ function parse_cert(der_str) {
     }
     const vals = get_SAN_value(cert[0]);
     for (let i = 0; i < vals.length; i++) {
-        process_san(vals[i].obj)
+        process_san(vals[i].obj);
     }
     return cert[0];
 }
@@ -905,6 +897,7 @@ function parse_cert(der_str) {
  */
 function parse_pem_certs(pem) {
     const der = pem.split(/\n/);
+    /** @type {ASNObj[]} */
     const certs = [];
     if (pem.match(' CERTIFICATE-')) {
         var start = -1, end = -1;
@@ -937,7 +930,7 @@ function header2pem(header) {
     var pem = header.replace(/(BEGIN|END) (CERT)/g, '\$1#\$2');
     pem = pem.replace(/ /g, '\n').replace(/#/g, ' ');
     if (pem[-1] != '\n') {
-        pem += '\n'
+        pem += '\n';
     }
     return pem;
 }
