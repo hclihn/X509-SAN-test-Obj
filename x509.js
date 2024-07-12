@@ -220,7 +220,7 @@ function parse_datetime_str(s, time_zone, date_only = false) {
         ts += `${time_zone}`;
     }
     const t = Date.parse(ts);
-    if (Number.isNaN(t)) {
+    if (isNaN(t)) {
         throw `Invalid date-time (${s}) and/or timezone (${time_zone}) string`;
     }
     return new Date(t);
@@ -743,7 +743,7 @@ value (${obj.value}) with exepcted (${exp})`;
     }
     // the [index] case
     const idx = parseInt(m.groups.idx, 10);
-    if (Number.isNaN(idx)) { // unlikely due to regexp
+    if (isNaN(idx)) { // unlikely due to regexp
         throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p})`;
     } else if (idx < 0 || idx >= obj.value.length) {
         throw `Invalid index spec: path element[${level}] (${p}) index (${idx}) out of range of [0...${obj.value.length - 1}]`;
@@ -941,6 +941,7 @@ function header2pem(header) {
     return pem;
 }
 
-export default {asn1_read, parse_pem_certs, get_san, header2pem, get_SAN_value, get_cert_version, get_cert_validity, get_cert_san, traverse_ASN};
+export default {asn1_read, parse_pem_certs, get_san, header2pem, get_SAN_value,
+    get_cert_version, get_cert_validity, get_cert_san, traverse_ASN};
 
     
