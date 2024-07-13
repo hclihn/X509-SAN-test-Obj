@@ -1,16 +1,24 @@
 /** x509.js
  * ASN.1 DER X.509 certificate parsing and accessing.
  * Uses the object to represent the ASN.1 structure for easy structural validation and access.
- * Though this library fully decode the ASN.1 DER structure, it only processes parts of the X.509 certificate objects like version, vilidity, and subjectAltName. 
+ * Though this library fully decode the ASN.1 DER structure, it only processes parts of the X.509 certificate objects
+ * like version, validity, and subjectAltName.
  * Processing of other parts of the certificate can be done by traverse_ASN() on ASNObj.
+ *
  * Reference: https://datatracker.ietf.org/doc/html/rfc5280#page-16
- * Rewriting from https://github.com/nginx/njs-examples (njs/http/certs/js/x509.js) with bug fixes and lot of enhancments.
+ * Rewriting from https://github.com/nginx/njs-examples (njs/http/certs/js/x509.js) with bug fixes and lot of
+ * enhancements.
+ *
+ * Nginx njs does not support the following Javascript features:
+ *  1. Default values for function parameters, e.g., function f(a, b = 1) {...}.
+ *  2. Destructuring assignment, e.g., [x, y] = test().
+ *  3. Spread (...) syntax, e.g., a.push(...b).
  */
 
 /** Show debug messages in console?
  * @const {boolean}
  */
-const DEBUG = false;
+const DEBUG = true;
 /** Max number of bits for Number.MAX_SAFE_INTEGER.
  * @const {number}
  */
@@ -52,7 +60,7 @@ function asn1_parse_oid(buf) {
             oid.push(sid);
             sid = 0;
         } else {
-            sid += cur_octet & 0x7f; 
+            sid += cur_octet & 0x7f;
             sid <<= 7;
             if (sid > Number.MAX_SAFE_INTEGER) {
                 throw `Failed to parse OID: SID (${sid}) exceeding Number.MAX_SAFE_INTEGER`;
@@ -67,19 +75,19 @@ function asn1_parse_oid(buf) {
 
 /** Parse ASN.1 DER Integer.
  * @param  {Buffer} buf - The DER Integer value to be parsed.
- * @return {[boolean, number|string]} a tuple of [in_hex_rep, value].
- *     If the integer value can be converted, in_hex_rep is false, and value is the converted integer.
- *     If the length is longer than 6 bytes, in_hex_rep is true and value is the hex string representation.
+ * @return {[boolean, (number|string)]} a tuple of [in_hex_rep, value].
+ *   If the integer value can be converted, in_hex_rep is false, and value is the converted integer.
+ *   If the length is longer than 6 bytes, in_hex_rep is true and value is the hex string representation.
  */
 function asn1_parse_integer(buf) {
     if (buf.length > MAX_INT_BYTES) { // may exceed MAX_SAFE_INTEGER, lets return hex
         return [true, asn1_parse_any(buf)];
     }
-    var value = 0, is_negative = false, compl_int = 0;
+    var value = 0, is_negative = false, compliment_int = 0;
     if (buf[0] & 0x80) {
         is_negative = true;
         value = buf[0] & 0x7f;
-        compl_int = 1 << (8 * buf.length - 1);
+        compliment_int = 1 << (8 * buf.length - 1);
     } else {
         value = buf[0];
     }
@@ -88,7 +96,7 @@ function asn1_parse_integer(buf) {
             value = (value << 8) + buf[n];
         }
     }
-    return [false, (is_negative)? (value - compl_int) : value];
+    return [false, (is_negative)? (value - compliment_int) : value];
 }
 
 /** Parse ASN.1 DER ASCII string types.
@@ -146,7 +154,7 @@ function asn1_parse_bmp_string(buf) {
     } else if (buf[l-1] == 0 && buf[l-2] == 0) { // remove terminators
         l -= 2;
     }
-    // Javascript only support utf16le decoding, so we need to conver utf16be to utf16le.
+    // Javascript only support utf16le decoding, so we need to convert utf-16be to utf16le.
     const value = Buffer.allocUnsafe(l);
     for (let i = 0; i < l; i+=2) {
         value[i] = buf[i+1];
@@ -207,11 +215,11 @@ function asn1_parse_any(buf) {
 /** Convert ASN.1 DER GeneralizedTime style string to Date.
  * @param  {string} s - The date-time string (YYYYMMDDhhmmss) to be converted.
  * @param  {string} time_zone - The string of the timezone code (e.g., 'Z').
- * @param  {boolean} [date_only=false] - Indicates if s only contains the date part. Default to false.
+ * @param  {boolean} date_only - Indicates if s only contains the date part.
  * @return {Date} The Date object.
  * @throws {Error} If the date-time and/or time_zone string is invalid.
  */
-function parse_datetime_str(s, time_zone, date_only = false) {
+function parse_datetime_str(s, time_zone, date_only) {
     var ts = `${s.substr(0, 4)}-${s.substr(4, 2)}-${s.substr(6, 2)}`;
     if (!date_only) {
         ts += `T${s.substr(8, 2)}:${s.substr(10, 2)}:${s.substr(12, 2)}`;
@@ -252,7 +260,8 @@ function asn1_read_length(buf, pointer) {
         for (let n = 0; n < l; n++) {
             length = (length << 8) + buf[++pointer];
             if (n == MAX_INT_BYTES && buf[pointer] > MAX_INT_REM_VAL) {
-                throw `Failed to parse ASN.1 length @${pointer}: length (${length}+${buf[pointer]}) exceeds Number.MAX_SAFE_INTEGER`;
+                throw `Failed to parse ASN.1 length @${pointer}: length (${length}+${buf[pointer]}) exceeds `+
+                    `Number.MAX_SAFE_INTEGER`;
             }
         }
         return [length, pointer + 1];
@@ -271,12 +280,12 @@ function get_tag_name(tag) {
         case 0x03: return 'BitString';
         case 0x04: return 'OctetString';
         case 0x05: return 'Null';
-        case 0x06: return 'ObjectIdentifier'; 
+        case 0x06: return 'ObjectIdentifier';
         case 0x07: return 'ObjectDescriptor';
         case 0x08: return 'External';
-        case 0x09: return 'Real';	
+        case 0x09: return 'Real';
         case 0x0a: return 'Enumerated';
-        case 0x0b: return 'EmbeddedPDV';	
+        case 0x0b: return 'EmbeddedPDV';
         case 0x0c: return 'UTF8String';
         case 0x0d: return 'RelativeOID';
         case 0x0e: return 'Time';
@@ -300,117 +309,119 @@ function get_tag_name(tag) {
         case 0x20: return 'TimeOfDay';
         case 0x21: return 'DateTime';
         case 0x22: return 'Duration';
-        case 0x23: return 'OID-IRI';	
+        case 0x23: return 'OID-IRI';
         case 0x24: return 'RelativeOID-IRI';
         default: return `Tag-${tag}`; // just in case
     }
 }
 
 /** Get the ASN.1 DER class name.
- * @param  {number} cls - The ASN.1 DER class.
+ * @param  {number} tag_class - The ASN.1 DER class.
  * @return {string} The class name.
  */
-function get_class_name(cls) {
-    switch(cls) {
+function get_class_name(tag_class) {
+    switch(tag_class) {
         case 0: return 'Universal';
         case 1: return 'Application';
         case 2: return 'Context';
         case 3: return 'Private';
-        default: return `Class-${cls}`; // unlikely!
+        default: return `Class-${tag_class}`; // unlikely!
     }
 }
 
+// Nginx njs only supports function constructors, not ES6 classes!
+
 /** ASN.1 Object.
  * @class ASNObj
- * @property {number} cls - ASN.1 class.
- * @property  {number} tag - The ASN.1 tag.
- * @property  {string} type - The type string constructed from cls and tag.
- * @property  {string?} subtype - The subtype constructed from context.
- * @property  {Boolean} constructed - Indicates if the The ASN.1 DER tag is constructed.
- * @property  {(number|string|Date|ASNObj[])} value - The ASN.1 objects' value.
+ * @property {number} tag_class - ASN.1 class.
+ * @property {number} tag - The ASN.1 tag.
+ * @property {string} type - The type string constructed from tag_class and tag.
+ * @property {string?} subtype - The subtype constructed from context.
+ * @property {Boolean} constructed - Indicates if the The ASN.1 DER tag is constructed.
+ * @property {(number|string|Date|ASNObj[])} value - The ASN.1 objects' value.
  * @property {boolean} in_hex - Indicates if the value is a hex string.
  * @constructor ASN.1 object constructor.
- * @param  {number} cls - The ASN.1 object's class.
+ * @param  {number} tag_class - The ASN.1 object's class.
  * @param  {number} tag - The ASN.1 object's tag.
  * @param  {Boolean} constructed - Indicates if the The ASN.1 DER tag is constructed.
  * @param  {(number|string|Date|ASNObj[])} value - The ASN.1 objects' value.
- * @param {boolean} [in_hex=false] - Indicates if the value is a hex string. Default to false.
+ * @param  {boolean} in_hex - Indicates if the value is a hex string.
  * @return {ASNObj} The ASN.1 object.
  */
-function ASNObj(cls, tag, constructed, value, in_hex = false) {
-    this.cls = cls;
+function ASNObj(tag_class, tag, constructed, value, in_hex) {
+    this.tag_class = tag_class;
     this.tag = tag;
-    this.type = (cls == 0)? get_tag_name(tag):`${get_class_name(cls)}-${tag}`;      
+    this.type = (tag_class == 0)? get_tag_name(tag) : `${get_class_name(tag_class)}-${tag}`;
     this.constructed = constructed;
     this.in_hex = in_hex; // value in hex string representation?
     this.value = value;
 }
 
 /** Parse ASN.1 DER primitive.
- * @param  {number} cls - The DER class.
+ * @param  {number} tag_class - The DER class.
  * @param  {number} tag - The DER tag.
  * @param  {Boolean} constructed - Indicates if the The DER tag is constructed.
  * @param  {Buffer} buf - The DER value to be parsed.
  * @return {ASNObj|ASNObj[]} The ASN.1 object(s) for the parsed content.
  * @throws {Error} If the DER value is invalid.
  */
-function asn1_parse_primitive(cls, tag, constructed, buf) {
-    if (cls == 0) { // universla class
+function asn1_parse_primitive(tag_class, tag, constructed, buf) {
+    if (tag_class == 0) { // Universal class
         switch(tag) {
-            case 0x00: //End-of-Content (EOC)
-                return new ASNObj(cls, tag, false, null);
+            case 0x00: //End-of-Content
+                return new ASNObj(tag_class, tag, false, null, false);
             case 0x01: // Boolean
-                return new ASNObj(cls, tag, false, buf[0] != 0x00);
+                return new ASNObj(tag_class, tag, false, buf[0] != 0x00, false);
             case 0x02: { // INTEGER
-                const [in_hex, val] = asn1_parse_integer(buf);
-                return new ASNObj(cls, tag, false, val, in_hex);
+                const p = asn1_parse_integer(buf);
+                return new ASNObj(tag_class, tag, false, p[1], p[0]);
             }
             case 0x03: { // BIT STRING
                 // get the BitSting value first, then try to see if we can parse
                 // the DER substructure. If not, then return the hex representation.
                 const data = asn1_parse_bit_string(buf);
                 try {
-                    return new ASNObj(cls, tag, true, asn1_read(data));
+                    return new ASNObj(tag_class, tag, true, asn1_read(data), false);
                 } catch(e) {
-                    return new ASNObj(cls, tag, false, data.toString('hex'), true);
+                    return new ASNObj(tag_class, tag, false, data.toString('hex'), true);
                 }
             }
             case 0x04: // OCTET STRING
-                // Try to see if we can parse the DER substructure. 
+                // Try to see if we can parse the DER substructure.
                 // If not, then return the hex representation.
                 try {
-                    return new ASNObj(cls, tag, true, asn1_read(buf));
+                    return new ASNObj(tag_class, tag, true, asn1_read(buf), false);
                 } catch(e) {
-                    return new ASNObj(cls, tag, false, asn1_parse_octet_string(buf), true);
+                    return new ASNObj(tag_class, tag, false, asn1_parse_octet_string(buf), true);
                 }
             case 0x05: // Null
-                return new ASNObj(cls, tag, false, null);
+                return new ASNObj(tag_class, tag, false, null, false);
             case 0x06: // OBJECT IDENTIFIER
-                return new ASNObj(cls, tag, false, asn1_parse_oid(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_oid(buf), false);
             case 0x07: // Object Descriptor
-                return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
-            case 0x08: // EXTERNAL	
-            case 0x09: //REAL (float)	
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            case 0x08: // EXTERNAL
+            case 0x09: //REAL (float)
             case 0x0a: //ENUMERATED
-            case 0x0b: //EMBEDDED PDV	
-                return new ASNObj(cls, tag, false, asn1_parse_any(buf), true);
+            case 0x0b: //EMBEDDED PDV
+                return new ASNObj(tag_class, tag, false, asn1_parse_any(buf), true);
             case 0x0c: // UTF8String
-                return new ASNObj(cls, tag, false, asn1_parse_utf8_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_utf8_string(buf), false);
             case 0x0d: //Relative-OID
-                return new ASNObj(cls, tag, false, asn1_parse_oid(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_oid(buf), false);
             case 0x0f: // reserved
                 throw `Failed to parse ASN.1 primitive: tag (${tag}) is reserved`;
             case 0x10: //Sequence
             case 0x11: // Set
-                return new ASNObj(cls, tag, true, asn1_read(buf));
+                return new ASNObj(tag_class, tag, true, asn1_read(buf), false);
             case 0x0e: // TIME
             case 0x12: // NumericString (0-9 ans SP)
             case 0x13: // PrintableString (A-Z, a-z, 0-9, '-), +-/, SP, :, =, ?, *, &)
             case 0x14: // T61String
             case 0x15: // VideotexString
-                return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
             case 0x16: // IA5String
-                return new ASNObj(cls, tag, false, asn1_parse_ia5_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_ia5_string(buf), false);
             case 0x17: { // UTCTime (YYMMDDHHMMSSZ)
                 let s = buf.toString();
                 if (s.length != 13) {
@@ -418,40 +429,40 @@ function asn1_parse_primitive(cls, tag, constructed, buf) {
                 }
                 // add the centry part of the year
                 s = (s[0] >= '5'? '19': '20') + s;
-                return new ASNObj(cls, tag, false, parse_datetime_str(s.slice(0, -1), s[14]));
+                return new ASNObj(tag_class, tag, false, parse_datetime_str(s.slice(0, -1), s[14], false));
             }
             case 0x18: { // GeneralizedTime (YYYYMMDDHHMMSSZ)
                 let s = buf.toString();
                 if (s.length != 15) {
                     throw `Invalid GeneralizedTime (${s}): length (${s.length}) is not 15`;
                 }
-                return new ASNObj(cls, tag, false, parse_datetime_str(s.slice(0, -1), s[14]));
+                return new ASNObj(tag_class, tag, false, parse_datetime_str(s.slice(0, -1), s[14], false));
             }
             case 0x19: // GraphicString
             case 0x1a: // VisibleString (0x20-0x7f)
             case 0x1b: // GeneralString
-                return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
             case 0x1c: // UniversalString
-                return new ASNObj(cls, tag, false, asn1_parse_universal_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_universal_string(buf), false);
             case 0x1d: // CHARACTER STRING
-                return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
             case 0x1e: // BMPString
-                return new ASNObj(cls, tag, false, asn1_parse_bmp_string(buf));
+                return new ASNObj(tag_class, tag, false, asn1_parse_bmp_string(buf), false);
             case 0x1f: // DATE (YYYYMMDD)
             case 0x20: // TIME-OF-DAY
             case 0x21: // DATE-TIME (YYYYMMDDHHMMSS)
             case 0x22: // DURATION
-            case 0x23: // OID-IRI	
+            case 0x23: // OID-IRI
             case 0x24: // RELATIVE-OID-IRI
-                return new ASNObj(cls, tag, false, asn1_parse_ascii_string(buf));
-            default: 
-                return new ASNObj(cls, tag, false, asn1_parse_any(buf), true);
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            default:
+                return new ASNObj(tag_class, tag, false, asn1_parse_any(buf), true);
         }
     } else { // other classes
         if (constructed) {
-            return new ASNObj(cls, tag, true, asn1_read(buf));
+            return new ASNObj(tag_class, tag, true, asn1_read(buf), false);
         } else {
-            return new ASNObj(cls, tag, false, buf.toString('hex'), true);
+            return new ASNObj(tag_class, tag, false, buf.toString('hex'), true);
         }
     }
 }
@@ -486,11 +497,12 @@ function asn1_read(buf) {
             } while (buf[pointer] > 0x80);
         }
         if (++pointer > buf.length) {
-             throw `Failed to parse ASN.1 length @${pointer}: buffer length (${buf.length}) reached`;
+            throw `Failed to parse ASN.1 length @${pointer}: buffer length (${buf.length}) reached`;
         }
-        [length, pointer] = asn1_read_length(buf, pointer);
+        const p = asn1_read_length(buf, pointer);
+        length = p[0], pointer = p[1];
         if ((pointer + length) > buf.length) {
-             throw `Failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
+            throw `Failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
         }
         if (DEBUG) {
             if (is_constructed) {
@@ -516,11 +528,11 @@ function format_ipv4(buf) {
     }
     // IPv4 address
     /** @type {string[]} */
-    const intStrs = [];
+    const fields = [];
     for (let i = 0; i < buf.length; i++) {
-        intStrs.push(String(buf[i]));
+        fields.push(String(buf[i]));
     }
-    return intStrs.join('.');   
+    return fields.join('.');
 }
 
 /** Format the buffer content to an IPv6 address string.
@@ -567,17 +579,17 @@ function format_ipv6(buf) {
     }
     // use :: for the longest consecutive range of 0s
     if (max_range !== null && max_range[0] > 1) {
-        return fields.slice(0, max_range[1]).join(':') + '::' + 
-            fields.slice(max_range[2]).join(':');
+        return fields.slice(0, max_range[1]).join(':') + '::' + fields.slice(max_range[2]).join(':');
     }
     return fields.join(':');
 }
 
 /** Process the subjectAltName (SAN) extension in the certificate.
- * @param  {ASNObj} asn_obj - The root ASN.1 object of the certificate. Each SAN entry is updated in place with the subtype property added to indicated the entry's content type (e.g., dNSName). 
+ * @param  {ASNObj} asn_obj - The root ASN.1 object of the certificate. Each SAN entry is updated in place with the
+ *   subtype property added to indicated the entry's content type (e.g., dNSName).
  */
 function process_san(asn_obj) {
-    if (asn_obj.cls == 2) { // context specific, non-constructed
+    if (asn_obj.tag_class == 2) { // context specific, non-constructed
         /* SAN GeneralName ::= CHOICE {
             otherName                       [0]     OtherName,
             rfc822Name                      [1]     IA5String,
@@ -587,16 +599,16 @@ function process_san(asn_obj) {
             ediPartyName                    [5]     EDIPartyName,
             uniformResourceIdentifier       [6]     IA5String,
             iPAddress                       [7]     OCTET STRING,
-            registeredID                    [8]     OBJECT IDENTIFIER 
+            registeredID                    [8]     OBJECT IDENTIFIER
         }*/
         const buf = Buffer.from(asn_obj.value, 'hex'); // convert hex value back to Buffer to process.
         switch(asn_obj.tag) {
-            case 0x00: 
+            case 0x00:
                 asn_obj.value = asn1_parse_any(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'otherName';
                 return;
-            case 0x01: 
+            case 0x01:
                 asn_obj.value =  asn1_parse_ascii_string(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'rfc822Name';
@@ -606,29 +618,29 @@ function process_san(asn_obj) {
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'dNSName';
                 return;
-            case 0x03: 
+            case 0x03:
                 asn_obj.value = asn1_parse_any(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'x400Address';
                 return;
-            case 0x04: 
+            case 0x04:
                 asn_obj.value = asn1_parse_any(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'directoryName';
                 return;
-            case 0x05: 
+            case 0x05:
                 asn_obj.value = asn1_parse_any(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'ediPartyName';
                 return;
-            case 0x06: 
+            case 0x06:
                 asn_obj.value = asn1_parse_ascii_string(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'uniformResourceIdentifier';
                 return;
-            case 0x07: 
+            case 0x07:
                 if (buf.length == 4) { // IPv4 address
-                    asn_obj.value = format_ipv4(buf);   
+                    asn_obj.value = format_ipv4(buf);
                     asn_obj.in_hex = false;
                     asn_obj.subtype = 'iPAddressV4';
                     return;
@@ -643,7 +655,7 @@ function process_san(asn_obj) {
                 asn_obj.in_hex = true;
                 asn_obj.subtype = 'iPAddress';
                 return;
-            case 0x08: 
+            case 0x08:
                 asn_obj.value = asn1_parse_any(buf);
                 asn_obj.in_hex = false;
                 asn_obj.subtype = 'registeredID';
@@ -667,7 +679,7 @@ function process_san(asn_obj) {
  */
 
 /** The search result from ASN.1 tree traversing.
- * @typedef {Object} SearchResult
+ * @typedef  {Object} SearchResult
  * @property {PathElementSpec[]} path - The path of the found object with '*' and '?' replaced with the actual index.
  * @property {(string|number|Date|ASNObj[])} obj - The value of the found object.
  */
@@ -680,16 +692,17 @@ const PATH_SPEC = /^(?<name>[a-z0-9-]+)(?:\[(?<idx>(?:[0-9]+|[*?]))\])?$/i;
 /** Traverse the certificate ASN.1 object tree to find element(s) matching the path.
  * @param  {ASNObj} obj - The ASN.1 object to traverse.
  * @param  {PathElementSpec[]} path - The path element spec array defining the search path.
- * @param  {(string|number|Date} [exp=null] - The expected ASN.1 object value to match at the last level. Defaults to null which will not be used for matching.
- * @param  {number} [level=0] - The traversing level (corresponding to the index of the path array) used by the recusion. Defaults to 0.
+ * @param  {(string|number|Date)} exp - The expected ASN.1 object value to match at the last level.
+ *   Use null if nothing to be expected.
+ * @param  {number} level - The traversing level (corresponding to the index of the path array) used by the
+ *   recursion.
  * @return {SearchResult[]} The search result(s).
  * @throws {Error} If the path is invalid; or it fails to find the ASNObj tree.
  */
-function traverse_ASN(obj, path, exp = null, level = 0) {
+function traverse_ASN(obj, path, exp, level) {
     if (path.length == level) {
         if (exp !== null && exp != obj) {
-            throw `Failed to match path element[${level}] (${p}): mismatch 
-value (${obj.value}) with exepcted (${exp})`;
+            throw `Failed to match path element[${level}] (${p}): mismatch value (${obj.value}) with expected (${exp})`;
         }
         if (obj.constructor.name == 'ASNObj') {
             return [{'path': [obj.type], 'obj': obj}];
@@ -724,11 +737,11 @@ value (${obj.value}) with exepcted (${exp})`;
         var matches = 0;
         for (let i = 0; i < obj.value.length; i++) {
             try {
-                const ar =  traverse_ASN(obj.value[i], path, exp, level + 1);
+                const ar = traverse_ASN(obj.value[i], path, exp, level + 1);
                 for (let j = 0; j < ar.length; j++) {
                     ar[j].path.unshift(`${obj.type}[${i}]`);
+                    a.push(ar[j]);
                 }
-                a.push(...ar);
                 matches++; // tracks matches at this level only
             } catch(e) { // no match for this array element, try next
                 continue;
@@ -746,7 +759,8 @@ value (${obj.value}) with exepcted (${exp})`;
     if (isNaN(idx)) { // unlikely due to regexp
         throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p})`;
     } else if (idx < 0 || idx >= obj.value.length) {
-        throw `Invalid index spec: path element[${level}] (${p}) index (${idx}) out of range of [0...${obj.value.length - 1}]`;
+        throw `Invalid index spec: path element[${level}] (${p}) index (${idx}) out of range of `+
+            `[0...${obj.value.length - 1}]`;
     }
     const a = traverse_ASN(obj.value[idx], path, exp, level + 1);
     for (let i = 0; i < a.length; i++) {
@@ -758,17 +772,16 @@ value (${obj.value}) with exepcted (${exp})`;
 /** Path element array for the X.509 certificate version.
  * @const {PathElementSpec[]}}
  */
-const CERT_VER_PATH = [
-    'Sequence[0]' /* TBSCertificate */, 
+const CERT_VERSION_PATH = ['Sequence[0]' /* TBSCertificate */,
     'Sequence[0]' /* Version */, 'Context-0[0]', "Integer"];
 
 /** Get the X.509 certificate version.
- * @param {ASNObj} cert - The top-level ASN.1 onject representing the certificate.
+ * @param  {ASNObj} cert - The top-level ASN.1 object representing the certificate.
  * @return {number} The certificate version.
  * @throws {Error} If the number of found version is not 1.
  */
 function get_cert_version(cert) {
-    const a = traverse_ASN(cert, CERT_VER_PATH);
+    const a = traverse_ASN(cert, CERT_VERSION_PATH, null, 0);
     if (a.length != 1) {
         throw `Failed to find version in certificate`;
     }
@@ -778,22 +791,22 @@ function get_cert_version(cert) {
 /** Path element array for the X.509 certificate validity field.
  * @const {PathElementSpec[]}
  */
-const CERT_VALID_PATH = [
-    'Sequence[0]' /* TBSCertificate */, 'Sequence[4]' /* Validity */, 'Sequence[*]'];
+const CERT_VALID_PATH = ['Sequence[0]' /* TBSCertificate */,
+    'Sequence[4]' /* Validity */, 'Sequence[*]'];
 
 /** X.509 certificate validity dates.
- * @typedef {Object} CertValidity
+ * @typedef  {Object} CertValidity
  * @property {Date} notBefore - The notBefore date of the certificate.
  * @property {Date} notAfter - The notAfter date of the certificate.
  */
 
 /** Get X.509 certificate validity dates.
- * @param {ASNObj} cert - The top-level ASN.1 object representing the certificate.
+ * @param  {ASNObj} cert - The top-level ASN.1 object representing the certificate.
  * @return {CertValidity} The certificate validity date object.
  * @throws {Error} If the number of found validity objects are not 2.
  */
 function get_cert_validity(cert) {
-    const a = traverse_ASN(cert, CERT_VALID_PATH);
+    const a = traverse_ASN(cert, CERT_VALID_PATH, null, 0);
     if (a.length != 2) {
         throw `Failed to find validity in certificate`;
     }
@@ -803,35 +816,34 @@ function get_cert_validity(cert) {
 /** Path element array for the X.509 certificate subjectAltName's OID part.
  * @const {PathElementSpec[]}
  */
-const SAN_PATH = [
-    'Sequence[0]' /* TBSCertificate */, 
-    'Sequence[?]', 'Context-3[0]' /* Extensions */, 'Sequence[*]', 
+const SAN_PATH = ['Sequence[0]' /* TBSCertificate */,
+    'Sequence[?]', 'Context-3[0]' /* Extensions */, 'Sequence[*]',
     /* Extension */ 'Sequence[0]', 'ObjectIdentifier'];
 
 /** Get the subjectAltName's value part.
- * @param {ASNObj} cert - The top-level ASN.1 object representing the certificate.
+ * @param  {ASNObj} cert - The top-level ASN.1 object representing the certificate.
  * @return {SearchResult[]} The array fo SAN's value objects.
  * @throws {Error} If it fails to find SAN.
  */
 function get_SAN_value(cert) {
-    const vals = traverse_ASN(cert, SAN_PATH, "2.5.29.17");
-    const l = vals.length;
+    const values = traverse_ASN(cert, SAN_PATH, "2.5.29.17", 0);
+    const l = values.length;
     if (l == 0) {
         throw `Invalid PEM certificate: missing subjectAltName (OID 2.5.29.17)`;
     } else if (l > 1) {
         throw `Failed to find SAN value in certificate: too many (${l}) subjectAltName (OID 2.5.29.17), expected 1`;
     }
-    const obj = vals[0];
-    // Replace last 3 pathe elements ('Sequence[0]', 'Object-Identifier', ':value:')
+    const obj = values[0];
+    // Replace last 3 path elements ('Sequence[0]', 'Object-Identifier', ':value:')
     // with 'Sequence[1]', 'Octet-String[0]', 'Sequence[*]' to get SAN values.
     const ps = traverse_ASN(cert, obj.path.slice(0, -3).concat([
-        'Sequence[1]', 'OctetString[0]', 'Sequence[*]']));
+        'Sequence[1]', 'OctetString[0]', 'Sequence[*]']), null, 0);
     return ps;
 }
 
 /** Get X.509 certificate subjectAltName's values.
  * Certificate version is not checked which should be done by the caller.
- * @param {ASNObj} cert - The top-level ASN.1 object representing the certificate.
+ * @param  {ASNObj} cert - The top-level ASN.1 object representing the certificate.
  * @return {string[]} The array of subjectAltName's values.
  * @throws {Error} If it fails to find SAN.
  */
@@ -839,7 +851,7 @@ function get_cert_san(cert) {
     const info = get_SAN_value(cert);
     /** @type {string[]} */
     const  sans = [];
-    for (let i = 1; i < info.length; i++) {
+    for (let i = 0; i < info.length; i++) {
         sans.push(info[i].obj.value);
     }
     return sans;
@@ -847,12 +859,12 @@ function get_cert_san(cert) {
 
 /** Get the subjectAltName (SAN) strings from X.509 PEM certificate.
  * @param  {string} pem_cert - The PEM formatted string to be parsed.
- * @param {number} [index=0] - The index of the certificate to get SAN from. Defaults to 0.
- * @param {boolean} [check_validity=true] - check if the certificate is invalid. Defaults to true.
+ * @param  {number} index - The index of the certificate to get SAN from.
+ * @param  {boolean} check_validity - check if the certificate is invalid.
  * @return {string[]} The array of SAN strings.
  * @throws {Error} If pem_cert is empty; index is invalid; wrong certificate version; or certificate is invalid.
  */
-function get_san(pem_cert, index = 0, check_validity = true) {
+function get_san(pem_cert, index, check_validity) {
     if (!pem_cert) {
         throw 'Empty client PEM certificate string specified';
     }
@@ -880,7 +892,7 @@ const validity = get_cert_validity(cert);
 }
 
 /** Parse the PEM certificate content string.
- * @param {string} der_str - The base64 string of the certificate.
+ * @param  {string} der_str - The base64 string of the certificate.
  * @return {ASNObj} The top-level ASN.1 object representing the certificate. SAN is processed.
  * @throws {Error} If the certificate is invalid.
  */
@@ -889,9 +901,9 @@ function parse_cert(der_str) {
     if (cert.length != 1) {
         throw `Invalid X.509 certificate: got ${cert.length} elements, expected 1`;
     }
-    const vals = get_SAN_value(cert[0]);
-    for (let i = 0; i < vals.length; i++) {
-        process_san(vals[i].obj);
+    const values = get_SAN_value(cert[0]);
+    for (let i = 0; i < values.length; i++) {
+        process_san(values[i].obj);
     }
     return cert[0];
 }
@@ -941,7 +953,5 @@ function header2pem(header) {
     return pem;
 }
 
-export default {asn1_read, parse_pem_certs, get_san, header2pem, get_SAN_value,
-    get_cert_version, get_cert_validity, get_cert_san, traverse_ASN};
-
-    
+export default {asn1_read, parse_pem_certs, get_san, header2pem, get_SAN_value, get_cert_version, get_cert_validity,
+    get_cert_san, traverse_ASN};
