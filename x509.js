@@ -4,32 +4,44 @@
  * Though this library fully decode the ASN.1 DER structure, it only processes parts of the X.509 certificate objects
  * like version, validity, and subjectAltName.
  * Processing of other parts of the certificate can be done by traverse_ASN() on ASNObj.
- *
+* Note that some ASN tags may be processed to use their hex string representation. If there is a usecase, it should be
+ * improved.
+ * 
  * Reference: https://datatracker.ietf.org/doc/html/rfc5280#page-16
- * Rewriting from https://github.com/nginx/njs-examples (njs/http/certs/js/x509.js) with bug fixes and lot of
+ * Rewriting from https://github.com/nginx/njs-examples (njs/http/certs/js/x509.js) with bug fixes and lots of
  * enhancements.
  *
  * Nginx njs does not support the following Javascript features:
  *  1. Default values for function parameters, e.g., function f(a, b = 1) {...}.
  *  2. Destructuring assignment, e.g., [x, y] = test().
  *  3. Spread (...) syntax, e.g., a.push(...b).
- *  4. Deep njs limit of stack depth. Be carful with recursion!
+ *  4. njs has a shallow limit of stack depth. Be careful with recursion!
  */
 
 /** Show debug messages in console?
  * @const {boolean}
  */
-const DEBUG = true;
+const DEBUG = false;
+
+/** Use the recursive algorithm for asn1_read() and traverse_ASN().
+ * Otherwise, it uses the iterative algorithm.
+ * njs has a shallow limit of stack depth. Be careful with recursion!
+ * @const {boolean}
+ */
+const USE_RECURSION = false;
+
 /** Max number of bits for Number.MAX_SAFE_INTEGER.
  * @const {number}
  */
 const MAX_INT_BITS = Math.log2(Number.MAX_SAFE_INTEGER);
+
 /** Max number of bytes before exceeding Number.MAX_SAFE_INTEGER.
  * @const {number}
  */
 const MAX_INT_BYTES = Math.floor(MAX_INT_BITS/8);
+
 /** Max remaning number beyond MAX_INT_BYTES for  Number.MAX_SAFE_INTEGER.
- *   i.e., MAX_INT_REM_VAL ==  Number.MAX_SAFE_INTEGER / (2**(MAX_INT_BYTES * 8))
+ * i.e., MAX_INT_REM_VAL ==  Number.MAX_SAFE_INTEGER / (2**(MAX_INT_BYTES * 8))
  * @const {number}
  */
 const MAX_INT_REM_VAL =  (1 << (MAX_INT_BITS - MAX_INT_BYTES * 8)) - 1;
@@ -76,7 +88,7 @@ function asn1_parse_oid(buf) {
 
 /** Parse ASN.1 DER Integer.
  * @param  {Buffer} buf - The DER Integer value to be parsed.
- * @return {[boolean, (number|string)]} a tuple of [in_hex_rep, value].
+ * @return {[in_hex_rep: boolean, value: (number|string)]} a tuple of [in_hex_rep, value].
  *   If the integer value can be converted, in_hex_rep is false, and value is the converted integer.
  *   If the length is longer than 6 bytes, in_hex_rep is true and value is the hex string representation.
  */
@@ -235,10 +247,43 @@ function parse_datetime_str(s, time_zone, date_only) {
     return new Date(t);
 }
 
+/** Parse ASN.1 DER's tag part.
+ * @param  {Buffer} buf - The DER length value to be parsed.
+ * @param  {number} pointer - the index where the length part starts in buf.
+ * @return {[tag_class: number, is_constructed: boolean, tag: number, pointer: number]} The array of
+ *   [tag_class, is_constructed, tag, index to the length part].
+ * @throws {Error} If the tag is invalid.
+ */
+function asn1_read_tag(buf, pointer) {
+    // read type: bits 7 & 8 define class; bit 6 indicates if it is constructed
+    const s = buf[pointer];
+    const tag_class = s >> 6;
+    const is_constructed = (s & 0x20) != 0;
+    var tag = s & 0x1f;
+    if (tag == 0x1f) { // a multi-byte tag
+        tag = 0;
+        let i = 0;
+        do {
+            if (i > 3) {
+                throw `Failed to parse ASN.1 tag @${pointer}: invalid tag value: ${tag}`;
+            }
+            i++;
+            if (++pointer >= buf.length) {
+                throw `Failed to parse ASN.1 tag @${pointer}: buffer length (${buf.length}) reached`;
+            }
+            tag = (tag << 7) + (buf[pointer] & 0x7f);
+        } while (buf[pointer] > 0x80);
+    }
+    if (++pointer > buf.length) {
+        throw `Failed to parse ASN.1 tag @${pointer}: buffer length (${buf.length}) reached`;
+    }
+    return [tag_class, is_constructed, tag, pointer];
+}
+
 /** Parse ASN.1 DER's length part.
  * @param  {Buffer} buf - The DER length value to be parsed.
  * @param  {number} pointer - the index where the length part starts in buf.
- * @return {[number, number]} The array of [length, index to the value part].
+ * @return {[length: number, pointer: number]} The array of [length, index to the value part].
  * @throws {Error} If the length field value is longer than 6 bytes or invalid.
  */
 function asn1_read_length(buf, pointer) {
@@ -267,38 +312,6 @@ function asn1_read_length(buf, pointer) {
         }
         return [length, pointer + 1];
     }
-}
-
-/** Parse ASN.1 DER's tag part.
- * @param  {Buffer} buf - The DER length value to be parsed.
- * @param  {number} pointer - the index where the length part starts in buf.
- * @return {[number, boolean, number, number]} The array of [tag_class, is_constructed, tag, index to the length part].
- * @throws {Error} If the tag is invalid.
- */
-function asn1_read_tag(buf, pointer) {
-    // read type: 7 & 8 bits define class, 6 bit if it is constructed
-    const s = buf[pointer];
-    const tag_class = s >> 6;
-    const is_constructed = (s & 0x20) != 0;
-    let tag = s & 0x1f;
-    if (tag == 0x1f) { // a multi-byte tag
-        tag = 0;
-        let i = 0;
-        do {
-            if (i > 3) {
-                throw `Failed to parse ASN.1 tag @${pointer}: invalid tag value: ${tag}`;
-            }
-            i++;
-            if (++pointer >= buf.length) {
-                throw `Failed to parse ASN.1 tag @${pointer}: buffer length (${buf.length}) reached`;
-            }
-            tag = (tag << 7) + (buf[pointer] & 0x7f);
-        } while (buf[pointer] > 0x80);
-    }
-    if (++pointer > buf.length) {
-        throw `Failed to parse ASN.1 tag @${pointer}: buffer length (${buf.length}) reached`;
-    }
-    return [tag_class, is_constructed, tag, pointer];
 }
 
 /** Get the ASN.1 DER Universal class tag name.
@@ -390,17 +403,184 @@ function ASNObj(tag_class, tag, constructed, value, in_hex) {
     this.value = value;
 }
 
-/**
- * @typedef {Object} ParseTask
+/** Parse ASN.1 DER buffer.
+ * @param  {Buffer} buf - The DER buffer to be parsed.
+ * @return {ASNObj[]} The parsed object(s) stored in an array.
+ * @throws {Error} If the buffer is not a valid DER.
+ */
+function asn1_read(buf) {
+    if (DEBUG) {
+        console.log(`** Use ${USE_RECURSION?'recursive':'iterative'} version of asn1_read()`);
+    }
+    return USE_RECURSION? asn1_read_rec(buf): asn1_read_it(buf);
+}
+
+/** Parse ASN.1 DER primitive used by asn1_read_rec().
+ * @param  {number} tag_class - The DER class.
+ * @param  {number} tag - The DER tag.
+ * @param  {Boolean} constructed - Indicates if the The DER tag is constructed.
+ * @param  {Buffer} buf - The DER value to be parsed.
+ * @return {ASNObj|ASNObj[]} The ASN.1 object(s) for the parsed content.
+ * @throws {Error} If the DER value is invalid.
+ */
+function asn1_parse_primitive(tag_class, tag, constructed, buf) {
+    if (tag_class == 0) { // Universal class
+        switch(tag) {
+            case 0x00: //End-of-Content
+                return new ASNObj(tag_class, tag, false, null, false);
+            case 0x01: // Boolean
+                return new ASNObj(tag_class, tag, false, buf[0] != 0x00, false);
+            case 0x02: { // INTEGER
+                const p = asn1_parse_integer(buf);
+                return new ASNObj(tag_class, tag, false, p[1], p[0]);
+            }
+            case 0x03: { // BIT STRING
+                // get the BitSting value first, then try to see if we can parse
+                // the DER substructure. If not, then return the hex representation.
+                const data = asn1_parse_bit_string(buf);
+                try {
+                    return new ASNObj(tag_class, tag, true, asn1_read_rec(data), false);
+                } catch(e) {
+                    return new ASNObj(tag_class, tag, false, data.toString('hex'), true);
+                }
+            }
+            case 0x04: // OCTET STRING
+                // Try to see if we can parse the DER substructure.
+                // If not, then return the hex representation.
+                try {
+                    return new ASNObj(tag_class, tag, true, asn1_read_rec(buf), false);
+                } catch(e) {
+                    return new ASNObj(tag_class, tag, false, asn1_parse_octet_string(buf), true);
+                }
+            case 0x05: // Null
+                return new ASNObj(tag_class, tag, false, null, false);
+            case 0x06: // OBJECT IDENTIFIER
+                return new ASNObj(tag_class, tag, false, asn1_parse_oid(buf), false);
+            case 0x07: // Object Descriptor
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            case 0x08: // EXTERNAL
+            case 0x09: //REAL (float)
+            case 0x0a: //ENUMERATED
+            case 0x0b: //EMBEDDED PDV
+                return new ASNObj(tag_class, tag, false, asn1_parse_any(buf), true);
+            case 0x0c: // UTF8String
+                return new ASNObj(tag_class, tag, false, asn1_parse_utf8_string(buf), false);
+            case 0x0d: //Relative-OID
+                return new ASNObj(tag_class, tag, false, asn1_parse_oid(buf), false);
+            case 0x0f: // reserved
+                throw `Failed to parse ASN.1 primitive: tag (${tag}) is reserved`;
+            case 0x10: //Sequence
+            case 0x11: // Set
+                return new ASNObj(tag_class, tag, true, asn1_read_rec(buf), false);
+            case 0x0e: // TIME
+            case 0x12: // NumericString (0-9 ans SP)
+            case 0x13: // PrintableString (A-Z, a-z, 0-9, '-), +-/, SP, :, =, ?, *, &)
+            case 0x14: // T61String
+            case 0x15: // VideotexString
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            case 0x16: // IA5String
+                return new ASNObj(tag_class, tag, false, asn1_parse_ia5_string(buf), false);
+            case 0x17: { // UTCTime (YYMMDDHHMMSSZ)
+                let s = buf.toString();
+                if (s.length != 13) {
+                    throw `Invalid UTCTime (${s}): length (${s.length}) is not 13`;
+                }
+                // add the centry part of the year
+                s = (s[0] >= '5'? '19': '20') + s;
+                return new ASNObj(tag_class, tag, false, parse_datetime_str(s.slice(0, -1), s[14], false));
+            }
+            case 0x18: { // GeneralizedTime (YYYYMMDDHHMMSSZ)
+                let s = buf.toString();
+                if (s.length != 15) {
+                    throw `Invalid GeneralizedTime (${s}): length (${s.length}) is not 15`;
+                }
+                return new ASNObj(tag_class, tag, false, parse_datetime_str(s.slice(0, -1), s[14], false));
+            }
+            case 0x19: // GraphicString
+            case 0x1a: // VisibleString (0x20-0x7f)
+            case 0x1b: // GeneralString
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            case 0x1c: // UniversalString
+                return new ASNObj(tag_class, tag, false, asn1_parse_universal_string(buf), false);
+            case 0x1d: // CHARACTER STRING
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            case 0x1e: // BMPString
+                return new ASNObj(tag_class, tag, false, asn1_parse_bmp_string(buf), false);
+            case 0x1f: // DATE (YYYYMMDD)
+            case 0x20: // TIME-OF-DAY
+            case 0x21: // DATE-TIME (YYYYMMDDHHMMSS)
+            case 0x22: // DURATION
+            case 0x23: // OID-IRI
+            case 0x24: // RELATIVE-OID-IRI
+                return new ASNObj(tag_class, tag, false, asn1_parse_ascii_string(buf), false);
+            default:
+                return new ASNObj(tag_class, tag, false, asn1_parse_any(buf), true);
+        }
+    } else { // other classes
+        if (constructed) {
+            return new ASNObj(tag_class, tag, true, asn1_read_rec(buf), false);
+        } else {
+            return new ASNObj(tag_class, tag, false, buf.toString('hex'), true);
+        }
+    }
+}
+
+/** Parse ASN.1 DER buffer.
+ * This is a recursive implementation. It doesn't work for Nginx njs due to stack size.
+ * @param  {Buffer} buf - The DER buffer to be parsed.
+ * @return {ASNObj[]} The parsed object(s) stored in an array.
+ * @throws {Error} If the buffer is not a valid DER.
+ */
+function asn1_read_rec(buf) {
+    /** @type {ASNObj[]} */
+    const a = [];
+    var pointer = 0, length = 0;
+    while (pointer < buf.length) {
+        const t = asn1_read_tag(buf, pointer);
+        const tag_class = t[0], is_constructed = t[1], tag = t[2];
+        const p = asn1_read_length(buf, t[3]);
+        length = p[0], pointer = p[1];
+        if ((pointer + length) > buf.length) {
+            throw `Failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
+        }
+        if (DEBUG) {
+            if (is_constructed) {
+                console.log('constructed', tag_class, tag.toString(16), length.toString(16), pointer.toString(16));
+            } else {
+                console.log('primitive  ', tag_class, tag.toString(16), length.toString(16), pointer.toString(16));
+            }
+        }
+        a.push(asn1_parse_primitive(tag_class, tag,is_constructed, buf.slice(pointer, pointer + length)));
+        pointer += length;
+    }
+    return a;
+}
+
+/** The parse task object used by asn_read_it().
+ * @class ParseTask
  * @property {Buffer} buf - The buffer to be parsed.
  * @property {number} pointer - The index where the next parsing starts.
  * @property {(number|string|Date|ASNObj[])} value - The top-level array or ASNObj's value to attach its children.
  * @property {ASNObj} obj - The ASNObj associated to the item used with hex_on_err.
  * @property {string} hex_on_err - The hex string representation used on error for BitString and OctetString.
+ * @constructor The ParseTask object constructor.
+ * @param  {Buffer} buf - The buffer to be parsed.
+ * @param  {number} pointer - The index where the next parsing starts.
+ * @param  {(number|string|Date|ASNObj[])} value - The top-level array or ASNObj's value to attach its children.
+ * @param  {ASNObj} obj - The ASNObj associated to the item used with hex_on_err.
+ * @param  {string} hex_on_err - The hex string representation used on error for BitString and OctetString.
+ * @return {ParseTask} The parse task object.
  */
+function ParseTask(buf, pointer, value, obj, hex_on_err) {
+    this.buf = buf;
+    this.pointer = pointer;
+    this.value = value;
+    this.obj = obj;
+    this.hex_on_err = hex_on_err;
+}
 
 /** Creates an ANSObj and add it to ParseTask item's value.
- * @param  {ParseTask} item - The ParseTask item used by asn1_read().
+ * @param  {ParseTask} item - The ParseTask item used by asn1_read_it().
  * @param  {number} tag_class - The DER class for the ANSObj.
  * @param  {number} tag - The DER tag  for the ANSObj.
  * @param  {Boolean} constructed - Indicates if the The DER tag is constructed  for the ANSObj.
@@ -413,14 +593,14 @@ function update_value(item, tag_class, tag, constructed, value, in_hex) {
     if (Array.isArray(item.value)) {
         item.value.push(obj);
     } else {
-        item.value = obj;  
+        item.value = obj;
     }
     return obj;
 }
 
 /** Checks if the ParseTask item has hex_on_err set.
- * If so, it converts the ASNObj's value to the hex string stored in hex_on_err.
- * @param  {ParseTask} item - The ParseTask item used by asn1_read().
+ * If so, it converts the ASNObj's (ParseTask.obj) value to the hex string stored in hex_on_err.
+ * @param  {ParseTask} item - The ParseTask item used by asn1_read_it().
  * @return {boolean} True if hex_on_err is set.
  */
 function check_hex_on_err(item) {
@@ -439,18 +619,18 @@ function check_hex_on_err(item) {
  * @return {ASNObj[]} The parsed object(s) stored in an array.
  * @throws {Error} If the buffer is not a valid DER.
  */
-function asn1_read(the_buf) {
+function asn1_read_it(the_buf) {
     /** @type {ParseTask[]} */
     const stack = [];
     var err_msg = '';
     /** @type {ASNObj[]} */
-    const a = [];
+    const result = [];
 
-    stack.push({"buf": the_buf, "pointer": 0, "value": a, "obj": null, "hex_on_err":''});
+    stack.push(new ParseTask(the_buf, 0, result, null, ''));
     while (stack.length > 0) {
-        var item = stack.pop();
+        let item = stack.pop();
         const buf = item.buf;
-        var pointer = item.pointer;
+        let pointer = item.pointer;
         // check for error from the previous item
         if (err_msg) { // from tag processing
             check_hex_on_err(item);
@@ -461,26 +641,20 @@ function asn1_read(the_buf) {
             continue;
         }
         // next ASN.1 tag
-        var tag_class, tag, is_constructed, length;
+        let tag_class, tag, is_constructed, length;
         try {
             const t = asn1_read_tag(buf, pointer);
             tag_class = t[0], is_constructed = t[1], tag = t[2];
             const p = asn1_read_length(buf, t[3]);
             length = p[0], pointer = p[1];
             if ((pointer + length) > buf.length) {
-                if (check_hex_on_err(item)) {
-                    err_msg = ''; // clear it!
-                    continue;
-                }
-                err_msg = `failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
+                err_msg = check_hex_on_err(item)? ''/*clear it!*/ :
+                    `failed to parse ASN.1 length @${pointer}: length (${length}) exceeds buffer size (${buf.length})`;
                 continue;
             }
-        } catch(e) {
-            if (check_hex_on_err(item)) {
-                err_msg = ''; // clear it!
-                continue;
-            }
-            err_msg = `failed to parse ASN.1 tag @${pointer}: ${e.message}`;
+        } catch(e) { // error in asn1_read_tag() or asn1_read_length()
+            err_msg = check_hex_on_err(item)? ''/*clear it!*/ :
+                `failed to parse ASN.1 tag @${pointer}: ${e.message}`;
             continue;
         }
         if (pointer < buf.length) { // push item to stack to continue parsing
@@ -518,7 +692,7 @@ function asn1_read(the_buf) {
                     try {
                         const data = asn1_parse_bit_string(my_buf);
                         const obj = update_value(item, tag_class, tag, true, [], false);
-                        stack.push({"buf": data, "pointer": 0, "value": obj.value, "obj": obj, "hex_on_err": data.toString('hex')});
+                        stack.push(new ParseTask(data, 0, obj.value, obj, data.toString('hex')));
                     } catch(e) {
                         err_msg = `failed to parse ASN.1 ${get_tag_name(tag)} @${pointer}: ${e.message}`;
                     }
@@ -527,7 +701,7 @@ function asn1_read(the_buf) {
                     // Try to see if we can parse the DER substructure.
                     // If not, then return the hex representation.
                     const obj = update_value(item, tag_class, tag, true, [], false);
-                    stack.push({"buf": my_buf, "pointer": 0, "value": obj.value, "obj": obj, "hex_on_err": asn1_parse_octet_string(my_buf)});
+                    stack.push(new ParseTask(my_buf, 0, obj.value, obj, asn1_parse_octet_string(my_buf)));
                     continue;
                 }
                 case 0x05: // Null
@@ -573,10 +747,10 @@ function asn1_read(the_buf) {
                 case 0x0f: // reserved
                     err_msg = `failed to parse ASN.1 primitive: tag (${tag}) is reserved`;
                     continue;
-                case 0x10: //Sequence
+                case 0x10: // Sequence
                 case 0x11: { // Set
                     const obj = update_value(item, tag_class, tag, true, [], false);
-                    stack.push({"buf": my_buf, "pointer": 0, "value": obj.value, "obj": obj, "hex_on_err": ''});
+                    stack.push(new ParseTask(my_buf, 0, obj.value, obj, ''));
                     continue;
                 }
                 case 0x16: // IA5String
@@ -641,7 +815,7 @@ function asn1_read(the_buf) {
         } else { // other classes
             if (is_constructed) {
                 const obj = update_value(item, tag_class, tag, true, [], false);
-                stack.push({"buf": my_buf, "pointer": 0, "value": obj.value, "obj": obj, "hex_on_err": ''});
+                stack.push(new ParseTask(my_buf, 0, obj.value, obj, ''));
                 continue;
             } else {
                 update_value(item, tag_class, tag, false, my_buf.toString('hex'), true);
@@ -652,7 +826,7 @@ function asn1_read(the_buf) {
     if (err_msg) {
         throw `Failed to parse ASN.1 DER buffer: ${err_msg}`;
     }
-    return a;
+    return result;
 }
 
 /** Format the buffer content to an IPv4 address string.
@@ -816,25 +990,147 @@ function process_san(asn_obj) {
  * @typedef {string} PathElementSpec
  */
 
-/** The serach task object used by traverse_ASN().
- * @typedef {Object} SearchTask
- * @property {(string|number|Date|ASNObj[])} obj - The object (ASNObj or ASNObj.value) to be searched for.
- * @property {number} level - The searched level.
- * @property {string[]} p_path - The path elements of the parents.
- * @property {number} cur_idx - The current child index used only by [*] and [?] searches.
- * @property {number} matches - The number of matched children used only by [*] and [?] searches.
- */
-
 /** The search result from ASN.1 tree traversing.
- * @typedef  {Object} SearchResult
+ * @class SearchResult
  * @property {PathElementSpec[]} path - The path of the found object with '*' and '?' replaced with the actual index.
  * @property {(string|number|Date|ASNObj[])} obj - The value of the found object.
+ * @constructor The SearchResult object constructor.
+ * @param  {PathElementSpec[]} path - The path of the found object with '*' and '?' replaced with the actual index.
+ * @param  {(string|number|Date|ASNObj[])} obj - The value of the found object.
+ * @return {SearchResult} The search result.
  */
+function SearchResult(path, obj) {
+    this.path = path;
+    this.obj = obj;
+}
 
 /** Regular expression for the path element spec.
  * @const {RegExp}
  */
 const PATH_SPEC = /^(?<name>[a-z0-9-]+)(?:\[(?<idx>(?:[0-9]+|[*?]))\])?$/i;
+
+/** Traverse the certificate ASN.1 object tree to find element(s) matching the path.
+ * @param  {ASNObj} obj - The ASN.1 object to traverse.
+ * @param  {PathElementSpec[]} path - The path element spec array defining the search path.
+ * @param  {(string|number|Date)} exp - The expected ASN.1 object value to match at the last level.
+ *   Use null if nothing to be expected.
+ * @return {SearchResult[]} The search result(s).
+ * @throws {Error} If the path is invalid; or it fails to find the ASNObj tree.
+ */
+function traverse_ASN(obj, path, exp) {
+    if (DEBUG) {
+        console.log(`** Use ${USE_RECURSION?'recursive':'iterative'} version of traverse_ASN()`);
+    }
+    return USE_RECURSION? traverse_ASN_rec(obj, path, exp, 0): traverse_ASN_it(obj, path, exp);
+}
+
+/** Traverse the certificate ASN.1 object tree to find element(s) matching the path.
+ * This is a recursive implementation. It doesn't work for Nginx njs due to stack size.
+ * @param  {(string|number|Date|ASNObj|ASNObj[])} obj - The ASN.1 object to traverse.
+ * @param  {PathElementSpec[]} path - The path element spec array defining the search path.
+ * @param  {(string|number|Date)} exp - The expected ASN.1 object value to match at the last level.
+ *   Use null if nothing to be expected.
+ * @param  {number} level - The traversing level (corresponding to the index of the path array) used by the
+ *   recursion.
+ * @return {SearchResult[]} The search result(s).
+ * @throws {Error} If the path is invalid; or it fails to find the ASNObj tree.
+ */
+function traverse_ASN_rec(obj, path, exp, level) {
+    if (path.length == level) {
+        if (exp !== null && exp != obj) {
+            throw `Failed to match path element[${level}] (${p}): mismatch value (${obj}) with expected (${exp})`;
+        }
+        const ps = [obj.constructor.name == 'ASNObj'? obj.type : ':value:'];
+        return [new SearchResult(ps, obj)];
+    }
+    const p = path[level];
+    const m = p.match(PATH_SPEC);
+    if (m === null) {
+        throw `Invalid path element[${level}]: ${p}`;
+    }
+    // checking obj for ASNObj
+    if (obj.constructor.name != 'ASNObj') {
+        throw `Invalid obj (obj.constructor.name) specified, expecting an ASNObj`;
+    }
+    if (obj.type != m.groups.name) {
+        throw `Path element[${level}] (${p}) does not match ${obj.type}`;
+    }
+    if (m.groups.idx === undefined) { // no [...] part
+        if (Array.isArray(obj.value)) {
+            throw `Missing index spec: path element[${level}] (${p}) value is an array`;
+        }
+        const a = traverse_ASN_rec(obj.value, path, exp, level + 1);
+        for (let i = 0; i < a.length; i++) {
+            a[i].path.unshift(`${obj.type}`);
+        }
+        return a;
+    }
+    // checking obj.value for ASNObj[]
+    if (!Array.isArray(obj.value)) {
+        throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p}) value is not an array`;
+    }
+    if (m.groups.idx == '*' || m.groups.idx == '?') { // the [*|?] case
+        // ?: only 1 match
+        // *: 1 or more matches
+        /** @type {SearchResult[]} */
+        const a = [];
+        var matches = 0;
+        for (let i = 0; i < obj.value.length; i++) {
+            try {
+                const ar = traverse_ASN_rec(obj.value[i], path, exp, level + 1);
+                for (let j = 0; j < ar.length; j++) {
+                    ar[j].path.unshift(`${obj.type}[${i}]`);
+                    a.push(ar[j]);
+                }
+                matches++; // tracks matches at this level only
+            } catch(e) { // no match for this array element, try next
+                continue;
+            }
+        }
+        if (matches == 0) {
+            throw `No match found for path element[${level}] (${p})`;
+        } else if (matches > 1 && m.groups.idx == '?') {
+            throw `Multiple matches (${matches}) found for path element[${level}] (${p})`;
+        }
+        return a;
+    }
+    // the [index] case
+    const idx = parseInt(m.groups.idx, 10);
+    if (isNaN(idx)) { // unlikely due to regexp
+        throw `Invalid index spec ([${m.groups.idx}]): path element[${level}] (${p})`;
+    } else if (idx < 0 || idx >= obj.value.length) {
+        throw `Invalid index spec: path element[${level}] (${p}) index (${idx}) out of range of `+
+            `[0...${obj.value.length - 1}]`;
+    }
+    const a = traverse_ASN_rec(obj.value[idx], path, exp, level + 1);
+    for (let i = 0; i < a.length; i++) {
+        a[i].path.unshift(`${obj.type}[${idx}]`);
+    }
+    return a;
+}
+
+/** The search task object used by traverse_ASN_it().
+ * @class SearchTask
+ * @property {(string|number|Date|ASNObj[])} obj - The object (ASNObj or ASNObj.value) to be searched for.
+ * @property {number} level - The searched level.
+ * @property {string[]} p_path - The path elements of the parents.
+ * @property {number} cur_idx - The current child index used only by [*] and [?] searches.
+ * @property {number} matches - The number of matched children used only by [*] and [?] searches.
+ * @constructor The SearchTask object constructor.
+ * @param {(string|number|Date|ASNObj[])} obj - The object (ASNObj or ASNObj.value) to be searched for.
+ * @param {number} level - The searched level.
+ * @param {string[]} p_path - The path elements of the parents.
+ * @param {number} cur_idx - The current child index used only by [*] and [?] searches.
+ * @param {number} matches - The number of matched children used only by [*] and [?] searches.
+ * @return {SearchTask} The search task object.
+ */
+function SearchTask(obj, level, p_path, cur_idx, matches) {
+    this.obj = obj;
+    this.level = level;
+    this.p_path = p_path;
+    this.cur_idx = cur_idx;
+    this.matches = matches;
+}
 
 /** Traverse the certificate ASN.1 object tree to find element(s) matching the path.
  * Use iteration (instead of recursion) due to the small njs limit of stack depth.
@@ -845,30 +1141,36 @@ const PATH_SPEC = /^(?<name>[a-z0-9-]+)(?:\[(?<idx>(?:[0-9]+|[*?]))\])?$/i;
  * @return {SearchResult[]} The search result(s).
  * @throws {Error} If the path is invalid; or it fails to find the ASNObj tree.
  */
-function traverse_ASN(obj, path, exp) {
+function traverse_ASN_it(obj, path, exp) {
     /** @type {SearchTask[]} */
     const stack = [];
     /** @type {SearchResult[]} */
     const result = [];
-    let err_msg = '';
+    var err_msg = '';
 
-    stack.push({"obj": obj, "level": 0, "p_path": [], "cur_idx": -1, "matches": 0});
+    stack.push(new SearchTask(obj, 0, [], -1, 0));
     while (stack.length > 0) {
-        var item = stack.pop(); 
+        let item = stack.pop();
         const obj = item.obj, level = item.level;
         const p = path[level];
         if (path.length == level) {
             if (exp !== null && exp != obj) {
-                err_msg = `failed to match path element[${level}] (${p}): mismatch value (${obj.value}) with expected (${exp})`;
+                err_msg = `failed to match path element[${level}] (${p}): mismatch value (${obj}) with `+
+                    `expected (${exp})`;
                 continue;
             }
             const ps = item.p_path.concat([obj.constructor.name == 'ASNObj'? obj.type : ':value:']);
-            result.push({'path': ps, 'obj': obj});
+            result.push(new SearchResult(ps, obj));
             continue;
         }
         const m = p.match(PATH_SPEC);
         if (m === null) {
             err_msg = `invalid path element[${level}]: ${p}`;
+            continue;
+        }
+        // checking obj for ASNObj
+        if (obj.constructor.name != 'ASNObj') {
+            err_msg = `invalid obj (obj.constructor.name) specified, expecting an ASNObj`;
             continue;
         }
         if (obj.type != m.groups.name) {
@@ -881,9 +1183,11 @@ function traverse_ASN(obj, path, exp) {
                 continue;
             }
             const ps = item.p_path.concat([`${obj.type}`]);
-            stack.push({"obj": obj.value, "level": level + 1, "p_path": ps, "cur_idx": -1, "matches": 0});
+            stack.push(new SearchTask(obj.value, level + 1, ps, -1, 0));
             continue;
-        } else if (!Array.isArray(obj.value)) {
+        }
+        // checking obj.value for ASNObj[]
+        if (!Array.isArray(obj.value)) {
             err_msg = `invalid index spec ([${m.groups.idx}]): path element[${level}] (${p}) value is not an array`;
             continue;
         }
@@ -906,7 +1210,7 @@ function traverse_ASN(obj, path, exp) {
                 stack.push(item); // push this level to stack to continue he search
                 // push the childe to stack
                 const ps = item.p_path.concat([`${obj.type}[${idx}]`]);
-                stack.push({"obj": obj.value[idx], "level": level + 1, "p_path": ps, "cur_idx": -1, "matches": 0});
+                stack.push(new SearchTask(obj.value[idx], level + 1, ps, -1, 0));
                 continue;
             }
             // done at this level
@@ -928,7 +1232,7 @@ function traverse_ASN(obj, path, exp) {
             continue;
         }
         const ps = item.p_path.concat([`${obj.type}[${idx}]`]);
-        stack.push({"obj": obj.value[idx], "level": level + 1, "p_path": ps, "cur_idx": -1, "matches": 0});
+        stack.push(new SearchTask(obj.value[idx], level + 1, ps, -1, 0));
         continue;
     }
     if (err_msg) {
@@ -949,7 +1253,7 @@ const CERT_VERSION_PATH = ['Sequence[0]' /* TBSCertificate */,
  * @throws {Error} If the number of found version is not 1.
  */
 function get_cert_version(cert) {
-    const a = traverse_ASN(cert, CERT_VERSION_PATH, null, 0);
+    const a = traverse_ASN(cert, CERT_VERSION_PATH, null);
     if (a.length != 1) {
         throw `Failed to find version in certificate`;
     }
@@ -974,7 +1278,7 @@ const CERT_VALID_PATH = ['Sequence[0]' /* TBSCertificate */,
  * @throws {Error} If the number of found validity objects are not 2.
  */
 function get_cert_validity(cert) {
-    const a = traverse_ASN(cert, CERT_VALID_PATH, null, 0);
+    const a = traverse_ASN(cert, CERT_VALID_PATH, null);
     if (a.length != 2) {
         throw `Failed to find validity in certificate`;
     }
@@ -994,7 +1298,7 @@ const SAN_PATH = ['Sequence[0]' /* TBSCertificate */,
  * @throws {Error} If it fails to find SAN.
  */
 function get_SAN_value(cert) {
-    const values = traverse_ASN(cert, SAN_PATH, "2.5.29.17", 0);
+    const values = traverse_ASN(cert, SAN_PATH, "2.5.29.17");
     const l = values.length;
     if (l == 0) {
         throw `Invalid PEM certificate: missing subjectAltName (OID 2.5.29.17)`;
@@ -1005,7 +1309,7 @@ function get_SAN_value(cert) {
     // Replace last 3 path elements ('Sequence[0]', 'Object-Identifier', ':value:')
     // with 'Sequence[1]', 'Octet-String[0]', 'Sequence[*]' to get SAN values.
     const ps = traverse_ASN(cert, obj.path.slice(0, -3).concat([
-        'Sequence[1]', 'OctetString[0]', 'Sequence[*]']), null, 0);
+        'Sequence[1]', 'OctetString[0]', 'Sequence[*]']), null);
     return ps;
 }
 
@@ -1051,7 +1355,7 @@ function get_san(pem_cert, index, check_validity) {
     if (v != 2) {
         throw `Invalid certificate version for subjectAltName: ${v}`;
     }
-    const validity = get_cert_validity(cert);
+const validity = get_cert_validity(cert);
     const now = new Date();
     if (check_validity && (validity.notBefore > now || validity.notAfter < now)) {
         throw `Invalid certificate validity: ${validity.notBefore} to ${validity.notAfter}`;
